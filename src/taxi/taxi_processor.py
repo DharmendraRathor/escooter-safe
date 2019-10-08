@@ -87,9 +87,30 @@ def read_from_s3(file_name_in):
     spark._jsc.hadoopConfiguration().set("fs.s3a.secret.key", access_key)
 
     csvDf = spark.read.option("header", "true").option("inferschema", "true").csv(file_name_in)
-    selected_df = csvDf.select("VendorID","tpep_pickup_datetime","passenger_count", "trip_distance","PULocationID","DOLocationID","total_amount")
+    print(file_name_in)
+    csvDf.printSchema()
+    
+    #selected_df = csvDf.select("VendorID","tpep_pickup_datetime","passenger_count", "trip_distance","PULocationID","DOLocationID","total_amount")
+    selected_df = csvDf.select("VendorID","tpep_pickup_datetime","passenger_count", "trip_distance","PULocationID","total_amount")
     selected_df.show()
     return selected_df
+
+
+def read_from_s3_read_schema(file_name_in):
+    config = ConfigParser()
+    config.read(os.path.expanduser("~/.aws/credentials"))
+    aws_profile = 'default'
+    access_id = config.get(aws_profile, "aws_access_key_id")
+    access_key = config.get(aws_profile, "aws_secret_access_key")
+
+    spark = SparkSession.builder.appName("app").getOrCreate();
+    sc = spark.sparkContext
+    spark._jsc.hadoopConfiguration().set("fs.s3a.access.key", access_id)
+    spark._jsc.hadoopConfiguration().set("fs.s3a.secret.key", access_key)
+
+    csvDf = spark.read.option("header", "true").option("inferschema", "true").csv(file_name_in)
+    csvDf.printSchema();
+    return csvDf;
 
 def config(filename='dbproperties.ini', section='postgresql'):
     # create a parser
@@ -138,26 +159,30 @@ def date_conversion(indf):
 #    df.write.jdbc(url=db_url,table=table_name,mode='append',properties=db_properties)
 #    print('data insertion complete')
 
+
+def readSchema(fiel):
+    read_from_s3_read_schema(file);
+    
 def processEachFile(file):
     df = read_from_s3(file);
-    #df.show()
+
    # df = df.withColumn('tpep_pickup_datetime', concat(df.tpep_pickup_datetime.substr(0, 13), lit(':00:00')))
     df = df.withColumn('tpep_pickup_datetime',(round(unix_timestamp(col("tpep_pickup_datetime")) / 3600) * 3600).cast("timestamp"))
-    df.printSchema();
-
+    #df.filter(df['tpep_pickup_datetime'].lt("2018-01-01"));
+    df.show()
     df = df.withColumnRenamed('tpep_pickup_datetime','event_time').withColumnRenamed('passenger_count','psg_count').withColumnRenamed('trip_distance','trip_distance').withColumnRenamed('PULocationID','location_id').withColumnRenamed('total_amount','amount')
-    #df.show()
+    df = df.withColumn("location_id", df["location_id"].cast(T.IntegerType()))
+    
     df = df.dropna()
     find_score_udf = F.udf(find_score, T.IntegerType())
-                #    df=df.groupBy('pickup_hour','location').agg(find_score_udf(F.collect_list('trip_distance'),F.collect_list('psg_count'),F.collect_list('amount')).alias('score'))
     df=df.groupBy('event_time','location_id').agg(F.avg('trip_distance').cast(T.IntegerType()).alias('distance_avg') ,F.avg('psg_count').cast(T.IntegerType()).alias('psg_count_avg'),F.avg('amount').cast(T.IntegerType()).alias('amount_avg'),F.count('location_id').alias('count'),find_score_udf(F.collect_list('trip_distance'),F.collect_list('psg_count'),F.collect_list('amount')).alias('score'))
-    df.show()
     write_df_to_pgsql(df,'dataengproj.taxi_travel_score1')
     print(' file processed ',file)
 
 
 if __name__ == '__main__':
-    #for file in file_names:
-    file='s3a://mynytc/trip*data/yellow_tripdata*csv'
+    file='s3a://mynytc/trip data/yellow_tripdata_2017*.csv'
+    #file='s3a://mynytc/trip data/yellow_tripdata_2018-12.csv'
     processEachFile(file)
+    #readSchema(file)
 
